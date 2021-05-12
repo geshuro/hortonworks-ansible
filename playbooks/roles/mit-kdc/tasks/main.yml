@@ -1,0 +1,80 @@
+---
+- name: Cargar variables
+  include_vars: "{{ item }}"
+  with_first_found:
+    - files:
+        - "{{ ansible_os_family|lower }}-{{ ansible_distribution|lower }}-{{ ansible_distribution_major_version }}.yml"
+        - "{{ ansible_os_family|lower }}-{{ ansible_distribution|lower }}-{{ ansible_distribution_version }}.yml"
+        - "{{ ansible_os_family|lower }}-{{ ansible_distribution|lower }}.yml"
+        - "{{ ansible_os_family|lower }}-{{ ansible_distribution_major_version }}.yml"
+        - "{{ ansible_os_family|lower }}.yml"
+        - defaults.yml
+      paths:
+        - ../mit-kdc/vars
+
+- name: Instalar paquetes MIT KDC
+  package:
+    name: "{{ item }}"
+    update_cache: yes
+    state: present
+  with_items: "{{ kdc_packages | join(',') }}"
+
+- name: Subir el archivo de configuracion KDC
+  template:
+    src: kdc.conf.j2
+    dest: "{{ kdc_config_file }}"
+    mode: 0600
+    force: yes
+  notify: Reiniciar krb5
+
+- name: Crear la base de datos KDC para realm {{ security_options.realm | upper }}
+  shell: "{{ kdc_init_command }} -r {{ security_options.realm | upper }} -P {{ security_options.kdc_master_key }}"
+  args:
+    creates: "{{ kdc_database_file }}"
+  notify: Reiniciar krb5
+
+- meta: flush_handlers
+
+- name: Agregar el admin principal para realm {{ security_options.realm | upper }}
+  shell: "{{ kadmin_command }} -q \"add_principal -pw {{ security_options.admin_password }} {{ security_options.admin_principal }}/admin@{{ security_options.realm | upper }}\""
+  register: addprinc_result
+
+- name: Fallar si no se pudo crear el admin principal
+  fail:
+    msg: No se pudo crear el admin principal. Error es {{ addprinc_result.stderr }}
+  when: addprinc_result is failed or not (addprinc_result.stdout is search("Principal .* created") or addprinc_result.stderr is search("Principal or policy already exists while creating"))
+
+- name: Establecer la ACL para el usuario admin
+  lineinfile:
+    path: "{{ kdc_acl_file }}"
+    regexp: "^\\*/admin@{{ security_options.realm | upper }}.*"
+    line: "*/admin@{{ security_options.realm | upper }}  *"
+    insertbefore: EOF
+    state: present
+    create: yes
+    mode: 0600
+  notify: Reiniciar kadmin
+
+- meta: flush_handlers
+
+- name: Asegurar que se inicie el servicio kdc
+  service:
+    name: "{{ kdc_service_name }}"
+    state: started
+
+- name: Asegurar que el servicio kdc esté habilitado
+  service:
+    name: "{{ kdc_service_name }}"
+    enabled: yes
+  ignore_errors: true
+
+- name: Asegurar que se inicie el servicio kadmin
+  service:
+    name: "{{ kadmin_service_name }}"
+    state: started
+
+- name: Asegurar que el servicio kadmin esté habilitado
+  service:
+    name: "{{ kadmin_service_name }}"
+    enabled: yes
+  ignore_errors: true

@@ -1,0 +1,117 @@
+---
+- name: Comprar si la configuración solicitada del blueprint dinámico es correcta
+  hosts: ambari-server
+  gather_facts: False
+  tasks:
+    - name: Fallar si no hay ningún grupo de inventario de Ansible que coincida con el host_groups de blueprint.
+      fail:
+        msg: "El {{item.host_group}} host_group está definido en el blueprint, pero no hay ningún grupo de inventario de Ansible que coincida llamado {{item.host_group}} o no hay hosts en este grupo."
+      when: groups[item.host_group] is not defined or (groups[item.host_group] is defined and groups[item.host_group]|length == 0)
+      with_items: "{{ blueprint_dynamic }}"
+
+    - name: Fallar si ZooKeeper no esta presente
+      fail:
+        msg: "Todas las instalaciones requieren el componente 'ZOOKEEPER_SERVER'."
+      when: zookeeper_hosts|length == 0
+
+    - name: Fallar si Ranger no cumple con los requisitos previos
+      fail:
+        msg: "Ranger es parte del blueprint, pero la base de datos está configurada como 'embebida'."
+      when: (rangeradmin_hosts|length > 0 or rangerkms_hosts|length > 0) and database == 'embedded'
+
+    - name: Fallar si Ranger KMS no cumple con los requisitos previos
+      fail:
+        msg: "Ranger KMS requiere Ranger Admin."
+      when: rangerkms_hosts|length > 0 and rangeradmin_hosts|length < 1
+
+    - name: Fallar si Atlas no cumple con los requisitos previos
+      fail:
+        msg: "Atlas requiere que todos los siguientes componentes estén presentes en el blueprint: INFRA_SOLR, HBASE_MASTER, HBASE_REGIONSERVER, KAFKA_BROKER."
+      when: "'ATLAS_SERVER' in blueprint_all_services and ('INFRA_SOLR' not in blueprint_all_services or 'HBASE_MASTER' not in blueprint_all_services or 'HBASE_REGIONSERVER' not in blueprint_all_services or 'KAFKA_BROKER' not in blueprint_all_services)"
+
+    - name: Fallar si Streamline no cumple con los requisitos previos
+      fail:
+        msg: "Streamline es parte del blueprint, pero la base de datos está configurada como 'embebida'."
+      when: streamline_hosts|length > 0 and database == 'embedded'
+
+    - name: Fallar si Registry no cumple con los requisitos previos
+      fail:
+        msg: "Registry es parte del blueprint, pero la base de datos está configurada como 'embebida'."
+      when: registry_hosts|length > 0 and database == 'embedded'
+
+    - name: Fallar si Druid HA no cumple con los requisitos previos
+      fail:
+        msg: "Varios nodos están configurados para ejecutar componentes Druid, pero la base de datos está configurada como 'embebida'."
+      when: druid_hosts|length > 1 and database == 'embedded'
+
+    - name: Fallar si Amazon Linux no cumple con los requisitos previos
+      fail:
+        msg: "Amazon Linux no es compatible con Hive con la base de datos 'embebida'. Configure la base de datos en otra opción y vuelva a ejecutar el playbooks."
+      when: database == 'embedded' and ansible_distribution|lower == "amazon" and hiveserver_hosts|length > 0
+
+    - name: Fallar si los componentes seleccionados no deben ser parte del blueprint de HDP 3
+      fail:
+        msg: "Al instalar HDP 3, el componente {{item}} no debe formar parte del blueprint."
+      when: install_hdp and hdp_major_version == '3' and item in blueprint_all_clients | union(blueprint_all_services)
+      with_items:
+        - 'HCAT'
+        - 'SLIDER'
+        - 'WEBHCAT_SERVER'
+
+    - name: Fallar si los componentes seleccionados no deben ser parte del blueprint de HDP 2
+      fail:
+        msg: "Al instalar HDP 2, el componente {{item}} no debe formar parte del blueprint."
+      when: install_hdp and hdp_major_version == '2' and item in blueprint_all_clients | union(blueprint_all_services)
+      with_items:
+        - 'YARN_REGISTRY_DNS'
+        - 'TIMELINE_READER'
+
+    - name: Fallar si los componentes HDFS requeridos no son parte del blueprint
+      fail:
+        msg: "Algunos o todos los siguientes componentes faltan en el blueprint: NAMENODE, DATANODE{{ (namenode_groups|length == 1) | ternary(', SECONDARY_NAMENODE',', ZKFC, JOURNALNODE') }}."
+      when: (namenode_groups|length == 1 and ['NAMENODE', 'DATANODE', 'SECONDARY_NAMENODE'] | difference(blueprint_all_services) | length > 0 ) or
+            (namenode_groups|length > 1 and ['NAMENODE', 'DATANODE', 'ZKFC', 'JOURNALNODE'] | difference(blueprint_all_services) | length > 0 )
+
+    - name: Fallar si el HA NameNode no cumple con los requisitos previos (3 JournalNodes)
+      fail:
+        msg: "Se ha solicitado HA NameNode pero hay menos de 3 JournalNodes definidos en el blueprint."
+      when: namenode_groups|length > 1 and journalnode_groups|length < 3
+
+    - name: Fallar si HA NameNode no cumple con los requisitos previos (ZKFC)
+      fail:
+        msg: "Se ha solicitado HA NameNode, pero el componente ZKFC debe estar presente en los nodos que ejecutan NAMENODE (solo)."
+      when: namenode_groups|length > 1 and (zkfc_groups|length < 2 or namenode_groups | symmetric_difference(zkfc_groups) | length > 0 )
+
+    - name: Fallar si SECONDARY_NAMENODE está presente con varios NAMENODE
+      fail:
+        msg: "Se ha solicitado HA NameNode pero el componente SECONDARY_NAMENODE todavía está presente en el blueprint."
+      when: namenode_groups|length > 1 and 'SECONDARY_NAMENODE' in blueprint_all_services
+
+    - name: Fallar si los componentes de Yarn requeridos no son parte del blueprint
+      fail:
+        msg: "Algunos o todos los siguientes componentes faltan en el blueprint: NODEMANAGER, APP_TIMELINE_SERVER{{ (hdp_major_version == '3') | ternary(', YARN_REGISTRY_DNS, TIMELINE_READER','') }}."
+      when: resourcemanager_groups|length > 0 and
+              ((hdp_major_version == '3' and ['NODEMANAGER', 'APP_TIMELINE_SERVER', 'YARN_REGISTRY_DNS', 'TIMELINE_READER'] | difference(blueprint_all_services) | length > 0 )
+              or
+              (hdp_major_version == '2' and ['NODEMANAGER', 'APP_TIMELINE_SERVER'] | difference(blueprint_all_services) | length > 0 ))
+
+    - name: Fallar si los componentes requeridos de Hive no son parte del blueprint
+      fail:
+        msg: "Algunos o todos los siguientes componentes faltan en el blueprint: HIVE_SERVER, HIVE_METASTORE{{ (hdp_major_version == '2') | ternary(', WEBHCAT_SERVER','') }}."
+      when: hiveserver_hosts|length > 0 and
+              ((hdp_major_version == '3' and ['HIVE_SERVER', 'HIVE_METASTORE'] | difference(blueprint_all_services) | length > 0 )
+              or
+              (hdp_major_version == '2' and ['HIVE_SERVER', 'HIVE_METASTORE', 'WEBHCAT_SERVER'] | difference(blueprint_all_services) | length > 0 ))
+
+    - name: Fallar si los componentes Druid requeridos no son parte del blueprint
+      fail:
+        msg: "Uno o más de los siguientes componentes faltan en el blueprint: DRUID_BROKER, DRUID_COORDINATOR, DRUID_ROUTER, DRUID_MIDDLEMANAGER, DRUID_HISTORICAL, DRUID_OVERLORD."
+      when: druid_hosts|length > 0 and
+           ['DRUID_BROKER', 'DRUID_COORDINATOR', 'DRUID_ROUTER', 'DRUID_MIDDLEMANAGER', 'DRUID_HISTORICAL', 'DRUID_OVERLORD'] | difference(blueprint_all_services) | length > 0
+
+    - name: Fallar si los componentes requeridos de Accumulo no son parte del blueprint
+      fail:
+        msg: "Uno o más de los siguientes componentes faltan en el blueprint: ACCUMULO_CLIENT, ACCUMULO_MASTER, ACCUMULO_MONITOR, ACCUMULO_TRACER, ACCUMULO_GC, ACCUMULO_TSERVER."
+      when: (['ACCUMULO_CLIENT', 'ACCUMULO_MASTER', 'ACCUMULO_MONITOR', 'ACCUMULO_TRACER', 'ACCUMULO_GC', 'ACCUMULO_TSERVER'] | difference(blueprint_all_clients | union(blueprint_all_services)) | length > 0)
+            and
+            (['ACCUMULO_CLIENT', 'ACCUMULO_MASTER', 'ACCUMULO_MONITOR', 'ACCUMULO_TRACER', 'ACCUMULO_GC', 'ACCUMULO_TSERVER'] | difference(blueprint_all_clients | union(blueprint_all_services)) | length < 6)

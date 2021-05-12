@@ -1,0 +1,5 @@
+---
+repo_os_family: "sles12"
+baseurl_os_family: "suse{{ ansible_distribution_major_version }}"
+
+

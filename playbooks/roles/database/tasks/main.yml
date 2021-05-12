@@ -1,0 +1,260 @@
+---
+- name: Cargar variables
+  include_vars: "{{ item }}"
+  with_first_found:
+    - files:
+        - "{{ ansible_os_family|lower }}-{{ ansible_distribution|lower }}-{{ ansible_distribution_major_version }}.yml"
+        - "{{ ansible_os_family|lower }}-{{ ansible_distribution|lower }}-{{ ansible_distribution_version }}.yml"
+        - "{{ ansible_os_family|lower }}-{{ ansible_distribution|lower }}.yml"
+        - "{{ ansible_os_family|lower }}-{{ ansible_distribution_major_version }}.yml"
+        - "{{ ansible_os_family|lower }}.yml"
+        - defaults.yml
+      paths:
+        - ../database/vars
+
+- name: Fallar si intenta instalar MariaDB en un sistema operativo no compatible
+  fail:
+    msg: "MariaDB no está disponible ni es compatible con SLES 11 y Debian/Ubuntu"
+  when: database == "mariadb" and ((ansible_os_family|lower == "suse" and ansible_distribution_major_version|int == 11) or ansible_os_family|lower == "debian")
+
+- block:
+    - name: Agregar el repositorio de mysql (yum)
+      yum_repository:
+        name: mysql-community
+        description: "MySQL {{ mysql_version }} Community Server"
+        baseurl: "{{ mysql_repo_url }}"
+        state: present
+        gpgcheck: yes
+        gpgkey: "{{ mysql_repo_key }}"
+      when: ansible_os_family|lower == "redhat"
+
+    - name: Agregar el repositorio de mysql (zypper)
+      zypper_repository:
+        name: mysql-community
+        description: "MySQL {{ mysql_version }} Community Server"
+        repo: "{{ mysql_repo_url }}"
+        state: present
+        disable_gpg_check : yes
+        runrefresh: yes
+      when: ansible_os_family|lower == "suse"
+
+    - name: Agregar el repositorio de mysql key (apt)
+      apt_key:
+        data: "{{ lookup('file', mysql_repo_keyfile) }}"
+        id: "{{ mysql_repo_key }}"
+      when: ansible_os_family|lower == "debian"
+
+    - name: Agregar el repositorio de mysql (apt)
+      apt_repository:
+        filename: mysql
+        repo: "{{ item }}"
+        state: present
+        update_cache: yes
+      with_items:
+        - "deb {{ mysql_repo_url }} {{ ansible_lsb.codename }} mysql-apt-config"
+        - "deb {{ mysql_repo_url }} {{ ansible_lsb.codename }} mysql-{{ mysql_version }}"
+        - "deb {{ mysql_repo_url }} {{ ansible_lsb.codename }} mysql-tools"
+        - "deb-src {{ mysql_repo_url }} {{ ansible_lsb.codename }} mysql-{{ mysql_version }}"
+      when: ansible_os_family|lower == "debian"
+  when: database == "mysql" and database_options.add_repo
+
+- block:
+    - name: Agregar el repositorio mariadb (yum)
+      yum_repository:
+        name: mariadb
+        description: "MariaDB"
+        baseurl: "{{ mariadb_repo_url }}"
+        state: present
+        gpgcheck: yes
+        gpgkey: "{{ mariadb_repo_key }}"
+      when: ansible_os_family|lower == "redhat"
+
+    - name: Agregar el repositorio mariadb (zypper)
+      zypper_repository:
+        name: mariadb
+        description: "MariaDB"
+        repo: "{{ mariadb_repo_url }}"
+        state: present
+        disable_gpg_check : yes
+        runrefresh: yes
+      when: ansible_os_family|lower == "suse"
+  when: database == "mariadb" and database_options.add_repo
+
+- block:
+    - name: Agregar el repositorio de postgres (yum)
+      yum_repository:
+        name: "{{ postgres_repo_name }}"
+        description: "PostgreSQL"
+        baseurl: "{{ postgres_repo_url }}"
+        state: present
+        gpgcheck: yes
+        gpgkey: "{{ postgres_repo_key }}"
+      when: ansible_os_family|lower == "redhat"
+
+    - name: Agregar el repositorio de postgres key (apt)
+      apt_key:
+        data: "{{ lookup('file', postgres_repo_keyfile) }}"
+        id: "{{ postgres_repo_key }}"
+      when: ansible_os_family|lower == "debian"
+
+    - name: Agregar el repositorio de postgres (apt)
+      apt_repository:
+        filename: pgdg
+        repo: "{{ item }}"
+        state: present
+        update_cache: yes
+      with_items:
+        - "deb {{ postgres_repo_url }} {{ ansible_lsb.codename }}-pgdg main"
+      when: ansible_os_family|lower == "debian"
+  when: database == "postgres" and database_options.add_repo and (postgres_repo_url|default(''))!=''
+
+- name: Instalar paquetes database {{ database }}
+  package:
+    name: "{{ item }}"
+    update_cache: yes
+    state: present
+  with_items: "{{ hostvars[inventory_hostname][database + '_packages'] | join(',') }}"
+
+- block:
+    - name: Iniciar postgres
+      become: yes
+      shell: "{{ postgres_initdb_command }}"
+      args:
+        creates: "{{ postgres_hba_file }}"
+        warn: false
+
+    - name: Configurar postgres para escuchar en todas las interfaces
+      lineinfile:
+        path: "{{ postgres_config_file }}"
+        line: "listen_addresses = '*'"
+        regexp: '^#?listen_addresses\s+='
+        state: present
+      notify: Restart postgres
+
+    - name: Establecer max_connections postgres
+      lineinfile:
+        path: "{{ postgres_config_file }}"
+        line: "max_connections = {{ max_connections }}"
+        regexp: '^#?max_connections\s+='
+        state: present
+      notify: Restart postgres
+  when: database == "postgres"
+
+- block:
+    - name: Configurar mysql para escuchar en todas las interfaces
+      ini_file:
+        path: "{{ (database == 'mariadb') | ternary(mariadb_config_file, mysql_config_file) }}"
+        create: no
+        section: "mysqld"
+        option: "bind-address"
+        value: "*"
+        no_extra_spaces: yes
+        state: present
+      notify: Restart {{ database }}
+
+    - name: Establecer max_connections mysql
+      ini_file:
+        path: "{{ (database == 'mariadb') | ternary(mariadb_config_file, mysql_config_file) }}"
+        create: no
+        section: "mysqld"
+        option: "max_connections"
+        value: "{{ max_connections }}"
+        no_extra_spaces: yes
+        state: present
+      notify: Restart {{ database }}
+  when: database == "mysql" or database == "mariadb"
+
+- meta: flush_handlers
+
+- name: Asegurar que se inicie el servicio {{database}}
+  service:
+    name: "{{ hostvars[inventory_hostname][database + '_service_name'] }}"
+    state: started
+
+- name: Asegurar que este enabled el servicio {{database}}
+  service:
+    name: "{{ hostvars[inventory_hostname][database + '_service_name'] }}"
+    enabled: yes
+  ignore_errors: true
+
+- name: Preparar la base de datos ambari
+  include_tasks: "{{ database | regex_replace('mariadb', 'mysql') }}_play.yml"
+  vars:
+    db_name: "{{ database_options.ambari_db_name }}"
+    db_username: "{{ database_options.ambari_db_username }}"
+    db_password: "{{ database_options.ambari_db_password }}"
+    db_client_hosts: "{{ inventory_hostname }}"
+
+- name: Preparar la base de datos hive
+  include_tasks: "{{ database | regex_replace('mariadb', 'mysql') }}_play.yml"
+  vars:
+    db_name: "{{ database_options.hive_db_name }}"
+    db_username: "{{ database_options.hive_db_username }}"
+    db_password: "{{ database_options.hive_db_password }}"
+    db_client_hosts: "{{ hiveserver_hosts }}"
+  when: hiveserver_hosts is defined and hiveserver_hosts|length > 0
+
+- name: Preparar la base de datos oozie
+  include_tasks: "{{ database | regex_replace('mariadb', 'mysql') }}_play.yml"
+  vars:
+    db_name: "{{ database_options.oozie_db_name }}"
+    db_username: "{{ database_options.oozie_db_username }}"
+    db_password: "{{ database_options.oozie_db_password }}"
+    db_client_hosts: "{{ oozie_hosts }}"
+  when: oozie_hosts is defined and oozie_hosts|length > 0
+
+- name: Preparar la base de datos druid
+  include_tasks: "{{ database | regex_replace('mariadb', 'mysql') }}_play.yml"
+  vars:
+    db_name: "{{ database_options.druid_db_name }}"
+    db_username: "{{ database_options.druid_db_username }}"
+    db_password: "{{ database_options.druid_db_password }}"
+    db_client_hosts: "{{ druid_hosts }}"
+    db_encoding: 'utf8'
+  when: druid_hosts is defined and druid_hosts|length > 0
+
+- name: Preparar la base de datos superset
+  include_tasks: "{{ database | regex_replace('mariadb', 'mysql') }}_play.yml"
+  vars:
+    db_name: "{{ database_options.superset_db_name }}"
+    db_username: "{{ database_options.superset_db_username }}"
+    db_password: "{{ database_options.superset_db_password }}"
+    db_client_hosts: "{{ superset_hosts }}"
+    db_encoding: 'utf8'
+  when: superset_hosts is defined and superset_hosts|length > 0
+
+- name: Preparar la base de datos ranger
+  include_tasks: "{{ database | regex_replace('mariadb', 'mysql') }}_play.yml"
+  vars:
+    db_name: "{{ database_options.rangeradmin_db_name }}"
+    db_username: "{{ database_options.rangeradmin_db_username }}"
+    db_password: "{{ database_options.rangeradmin_db_password }}"
+    db_client_hosts: "{{ rangeradmin_hosts }}"
+  when: rangeradmin_hosts is defined and rangeradmin_hosts|length > 0
+
+- name: Preparar la base de datos rangerkms
+  include_tasks: "{{ database | regex_replace('mariadb', 'mysql') }}_play.yml"
+  vars:
+    db_name: "{{ database_options.rangerkms_db_name }}"
+    db_username: "{{ database_options.rangerkms_db_username }}"
+    db_password: "{{ database_options.rangerkms_db_password }}"
+    db_client_hosts: "{{ rangerkms_hosts }}"
+  when: rangerkms_hosts is defined and rangerkms_hosts|length > 0
+
+- name: Preparar la base de datos registry
+  include_tasks: "{{ database | regex_replace('mariadb', 'mysql') }}_play.yml"
+  vars:
+    db_name: "{{ database_options.registry_db_name }}"
+    db_username: "{{ database_options.registry_db_username }}"
+    db_password: "{{ database_options.registry_db_password }}"
+    db_client_hosts: "{{ registry_hosts }}"
+  when: registry_hosts is defined and registry_hosts|length > 0
+
+- name: Preparar la base de datos streamline
+  include_tasks: "{{ database | regex_replace('mariadb', 'mysql') }}_play.yml"
+  vars:
+    db_name: "{{ database_options.streamline_db_name }}"
+    db_username: "{{ database_options.streamline_db_username }}"
+    db_password: "{{ database_options.streamline_db_password }}"
+    db_client_hosts: "{{ streamline_hosts }}"
+  when: streamline_hosts is defined and streamline_hosts|length > 0

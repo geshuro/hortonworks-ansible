@@ -1,0 +1,18 @@
+---
+packages:
+  - openssh-clients         # scp requerido por Ambari
+  - curl                    # curl requerido por Ambari
+  - unzip                   # unzip requerido por Ambari
+  - tar                     # tar requerido por Ambari
+  - wget                    # wget requerido por Ambari
+  - openssl                 # openssl requerido por Ambari
+  - ntp                     # ntp requerido por Hadoop
+  - openssl-devel           # openssl-devel recommended for Ranger KMS
+  - libtirpc-devel          # libtirpc requerido por HDP 2.6+
+  - libselinux-python       # libselinux-python requerido por Ansible
+
+openjdk_package: java-1.8.0-openjdk-devel
+
+ntp_service_name: ntpd
+
+firewall_service_name: iptables

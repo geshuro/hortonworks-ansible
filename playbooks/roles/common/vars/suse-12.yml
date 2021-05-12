@@ -1,0 +1,20 @@
+---
+packages:
+  - openssh                 # scp requerido por Ambari
+  - curl                    # curl requerido por Ambari
+  - php5-curl               # php-curl requred by Ambari in SLES
+  - unzip                   # unzip requerido por Ambari
+  - tar                     # tar requerido por Ambari
+  - wget                    # wget requerido por Ambari
+  - openssl                 # openssl requerido por Ambari
+  - ntp                     # ntp requerido por Hadoop
+  - libopenssl-devel        # openssl-devel recommended for Ranger KMS
+  - libtirpc-devel          # libtirpc requerido por HDP 2.6+
+
+openjdk_package: java-1_8_0-openjdk-devel
+
+ntp_service_name: ntpd
+
+firewall_service_name: SuSEfirewall2
+
+update_grub_command: 'grub2-mkconfig -o /boot/grub2/grub.cfg'

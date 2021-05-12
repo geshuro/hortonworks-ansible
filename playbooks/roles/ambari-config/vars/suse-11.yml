@@ -1,0 +1,4 @@
+---
+repo_os_family: "suse11sp3"
+baseurl_os_family: "suse{{ ansible_distribution_major_version }}"
+

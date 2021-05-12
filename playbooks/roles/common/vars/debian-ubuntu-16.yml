@@ -1,0 +1,21 @@
+---
+packages:
+  - openssh-client          # scp requerido por Ambari
+  - curl                    # curl requerido por Ambari
+  - unzip                   # unzip requerido por Ambari
+  - tar                     # tar requerido por Ambari
+  - wget                    # wget requerido por Ambari
+  - openssl                 # openssl requerido por Ambari
+  - ntp                     # ntp requerido por Hadoop
+  - python3-apt             # python-apt requerido por Ansible
+  - libssl-dev              # openssl-devel recommended for Ranger KMS
+  - python2.7               # python 2.7 requerido por Ambari
+  - libtirpc-dev            # libtirpc requerido por HDP 2.6+
+
+openjdk_package: openjdk-8-jdk
+
+ntp_service_name: ntp
+
+firewall_service_name: ufw
+
+update_grub_command: "/usr/sbin/update-grub"

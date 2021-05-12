@@ -1,0 +1,5 @@
+---
+- name: Generar el archivo de configuracion de Grub
+  shell: "{{ update_grub_command }}"
+  args:
+    chdir: /

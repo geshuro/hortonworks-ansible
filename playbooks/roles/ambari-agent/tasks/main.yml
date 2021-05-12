@@ -1,0 +1,53 @@
+---
+- name: Instalar el paquete ambari-agent
+  package:
+    name: ambari-agent
+    update_cache: yes
+    state: latest
+  notify: Reload systemd
+
+- name: Establecer el servidor Ambari en la configuración del agente
+  lineinfile:
+    path: /etc/ambari-agent/conf/ambari-agent.ini
+    regexp: "^hostname="
+    line: "hostname={{ hostvars[groups['ambari-server']|first]['ansible_fqdn'] }}"
+    state: present
+  notify: Reiniciar ambari-agent
+
+### Lo siguiente se realiza en Python> = 2.7 para evitar problemas con las últimas bibliotecas de Python que rechazan protocolos TLS inferiores
+- name: Configurar los agentes de Ambari para usar TLS 1.2
+  ini_file:
+    path: /etc/ambari-agent/conf/ambari-agent.ini
+    create: no
+    section: "security"
+    option: "force_https_protocol"
+    value: "PROTOCOL_TLSv1_2"
+    state: present
+  notify: Reiniciar ambari-agent
+  when: (ansible_python_version is version_compare('2.7.9', '>=') and ansible_os_family|lower == "debian") or
+        (ansible_python_version is version_compare('2.7', '>=') and ((ansible_os_family|lower == "redhat" and ansible_distribution_major_version|int >= 7) or
+                                                                     (ansible_os_family|lower == "suse" and ansible_distribution_major_version|int >= 12) or
+                                                                     (ansible_os_family|lower == "redhat" and ansible_distribution|lower == "amazon")))
+
+- name: Actualizar el directorio log de ambari-agent
+  ini_file:
+    path: /etc/ambari-agent/conf/ambari-agent.ini
+    create: no
+    section: "agent"
+    option: "logdir"
+    value: "{{ base_log_dir }}/ambari-agent"
+    state: present
+  notify: Reiniciar ambari-agent
+
+- meta: flush_handlers
+
+- name: Asegurar que inicie el servicio ambari-agent
+  service:
+    name: ambari-agent
+    state: started
+
+- name: Asegurar que el servicio ambari-agent este enabled
+  service:
+    name: ambari-agent
+    enabled: yes
+  ignore_errors: true

@@ -1,0 +1,390 @@
+---
+- name: Crear los grupos Ansible necesarios
+  hosts: localhost
+  connection: local
+  gather_facts: False
+  tasks:
+    - name: Agregar nodos al grupo de hadoop-cluster y grupos que representan a host_groups
+      include_tasks: "entorno/agregar_nodos_{{ entorno }}.yml"
+      with_items: "{{ nodes|default(omit) }}"
+
+    - name: Inicializar la lista ambari_groups
+      set_fact:
+        ambari_groups: []
+
+    - block:
+        - name: Completar la lista ambari_groups (blueprint dinámico)
+          set_fact:
+            ambari_groups: "{{ ambari_groups }} + [ '{{ item.host_group }}' ]"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and 'AMBARI_SERVER' in item.services
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+      when: blueprint_file == 'blueprint_dynamic.j2'
+
+    - block:
+        - name: Establecer la ruta del blueprint (relativa al rol ambari-blueprint)
+          set_fact:
+            blueprint_file_path: "{{ 'roles/ambari-blueprint/files/' + blueprint_file }}"
+          when: blueprint_file|list|first != '/' and blueprint_file|list|first != '~'
+
+        - name: Establecer la ruta de blueprint (absoluta)
+          set_fact:
+            blueprint_file_path: "{{ blueprint_file }}"
+          when: blueprint_file|list|first == '/' or blueprint_file|list|first == '~'
+
+        - name: Leer el contenido del static blueprint
+          set_fact:
+            blueprint_static: "{{ lookup('file', blueprint_file_path) }}"
+
+        - name: Fallar si el static blueprint no es un JSON valido
+          fail:
+            msg: "El blueprint {{blueprint_file}} no es un JSON valido o no tiene un elemento 'host_groups'."
+          when: blueprint_static['host_groups'] is not defined
+
+        - name: Completar la lista ambari_groups (static blueprint)
+          set_fact:
+            ambari_groups: "{{ ambari_groups }} + [ '{{ item.name }}' ]"
+          when: item | string is search("AMBARI_SERVER")
+          with_items: "{{ blueprint_static['host_groups'] }}"
+          no_log: True
+      when: blueprint_file != 'blueprint_dynamic.j2'
+
+    - name: Fallar si la lista ambari_groups esta vacia
+      fail:
+        msg: "La lista ambari_groups está vacía. Por lo general, esto significa que no hay un componente 'AMBARI_SERVER' definido en el blueprint o que no hay un grupo de inventario de Ansible que se corresponda con el nombre del host_group del blueprint del plan."
+      when: ambari_groups|length == 0
+
+    - name: Fallar si no hay ningún grupo de inventario de Ansible que coincida con el host_groups de blueprint.
+      fail:
+        msg: "El {{item}} host_group está definido en el blueprint, pero no hay ningún grupo de inventario de Ansible que coincida llamado {{item}} o no hay hosts en este grupo."
+      when: groups[item] is not defined or groups[item]|length == 0
+      with_items: "{{ ambari_groups }}"
+
+    - name: Agregar nodos al grupo ambari-server
+      add_host:
+        name: "{{ groups[ambari_groups|first]|first }}"
+        groups: "ambari-server"
+
+    - name: Fallar si no existe un grupo de inventario de Ansible llamado 'hadoop-cluster'
+      fail:
+        msg: "Se requiere el grupo de inventario de Ansible 'hadoop-cluster' antes de continuar. Verifique el inventario para detectar posibles problemas."
+      when: groups['hadoop-cluster'] is not defined or (groups['hadoop-cluster'] is defined and groups['hadoop-cluster']|length == 0)
+
+    - name: Fallar si no existe un grupo de inventario Ansible llamado 'ambari-server'
+      fail:
+        msg: "Se requiere el grupo de inventario Ansible 'ambari-server' antes de continuar. Verifique el inventario para detectar posibles problemas."
+      when: groups['ambari-server'] is not defined or (groups['ambari-server'] is defined and groups['ambari-server']|length == 0)
+
+- name: Crear las variables helper de Ansible para el ambari-server
+  hosts: ambari-server
+  gather_facts: False
+  tasks:
+    - name: Inicializar las variables de control
+      set_fact:
+        namenode_groups: []
+        zkfc_groups: []
+        hive_mysql_embedded_group: ''
+        resourcemanager_groups: []
+        journalnode_groups: []
+        zookeeper_groups: []
+        zookeeper_hosts: []
+        hiveserver_hosts: []
+        oozie_hosts: []
+        atlas_hosts: []
+        druid_hosts: []
+        superset_hosts: []
+        kafka_groups: []
+        kafka_hosts: []
+        rangeradmin_groups: []
+        rangeradmin_hosts: []
+        rangerkms_hosts: []
+        streamline_hosts: []
+        registry_hosts: []
+        hdf_hosts: []
+        solr_hosts: []
+        blueprint_all_services: []
+        blueprint_all_clients: []
+        install_hdp: False
+        install_hdf: False
+        install_hdpsearch: False
+        blueprint_static: ""
+      no_log: True
+
+    - block:
+        - name: LLenar la lista de grupos de namenode
+          set_fact:
+            namenode_groups: "{{ namenode_groups }} + [ '{{ item.host_group }}' ]"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and 'NAMENODE' in item.services
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de grupos de ZKFailoverController
+          set_fact:
+            zkfc_groups: "{{ zkfc_groups }} + [ '{{ item.host_group }}' ]"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and 'ZKFC' in item.services
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de grupos de resourcemanager
+          set_fact:
+            resourcemanager_groups: "{{ resourcemanager_groups }} + [ '{{ item.host_group }}' ]"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and 'RESOURCEMANAGER' in item.services
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de grupos de journalnode
+          set_fact:
+            journalnode_groups: "{{ journalnode_groups }} + [ '{{ item.host_group }}' ]"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and 'JOURNALNODE' in item.services
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de grupos de hive_mysql_embedded
+          set_fact:
+            hive_mysql_embedded_group: "{{ item.host_group }}"
+          when: not hive_mysql_embedded_group and database == 'embedded' and 'HIVE_METASTORE' in item.services and groups[item.host_group] is defined and groups[item.host_group]|length > 0
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de grupos de zookeeper
+          set_fact:
+            zookeeper_groups: "{{ zookeeper_groups }} + [ '{{ item.host_group }}' ]"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and 'ZOOKEEPER_SERVER' in item.services
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de hosts de zookeeper
+          set_fact:
+            zookeeper_hosts: "{{ zookeeper_hosts }} + {{ groups[item.host_group] }}"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and 'ZOOKEEPER_SERVER' in item.services
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de hosts de hiveserver
+          set_fact:
+            hiveserver_hosts: "{{ hiveserver_hosts }} + {{ groups[item.host_group] }}"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and ('HIVE_SERVER' in item.services or 'HIVE_METASTORE' in item.services or 'SPARK2_JOBHISTORYSERVER' in item.services)
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de hosts de oozie
+          set_fact:
+            oozie_hosts: "{{ oozie_hosts }} + {{ groups[item.host_group] }}"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and ('OOZIE_SERVER' in item.services)
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de hosts de atlas
+          set_fact:
+            atlas_hosts: "{{ atlas_hosts }} + {{ groups[item.host_group] }}"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and ('ATLAS_SERVER' in item.services)
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de hosts de druid
+          set_fact:
+            druid_hosts: "{{ druid_hosts }} + {{ groups[item.host_group] }}"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and ('DRUID_BROKER' in item.services or 'DRUID_COORDINATOR' in item.services or 'DRUID_ROUTER' in item.services or 'DRUID_MIDDLEMANAGER' in item.services or 'DRUID_HISTORICAL' in item.services or 'DRUID_OVERLORD' in item.services)
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de hosts de superset
+          set_fact:
+            superset_hosts: "{{ superset_hosts }} + {{ groups[item.host_group] }}"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and ('SUPERSET' in item.services)
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de hosts de kafka
+          set_fact:
+            kafka_groups: "{{ kafka_groups }} + [ '{{ item.host_group }}' ]"
+            kafka_hosts: "{{ kafka_hosts }} + {{ groups[item.host_group] }}"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and ('KAFKA_BROKER' in item.services)
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de grupos de rangeradmin
+          set_fact:
+            rangeradmin_groups: "{{ rangeradmin_groups }} + [ '{{ item.host_group }}' ]"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and ('RANGER_ADMIN' in item.services or 'RANGER_USERSYNC' in item.services)
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de hosts de rangeradmin
+          set_fact:
+            rangeradmin_hosts: "{{ rangeradmin_hosts }} + {{ groups[item.host_group] }}"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and ('RANGER_ADMIN' in item.services or 'RANGER_USERSYNC' in item.services)
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de hosts de rangerkms
+          set_fact:
+            rangerkms_hosts: "{{ rangerkms_hosts }} + {{ groups[item.host_group] }}"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and ('RANGER_KMS_SERVER' in item.services)
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de hosts de streamline
+          set_fact:
+            streamline_hosts: "{{ streamline_hosts }} + {{ groups[item.host_group] }}"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and ('STREAMLINE_SERVER' in item.services)
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de hosts de registry
+          set_fact:
+            registry_hosts: "{{ registry_hosts }} + {{ groups[item.host_group] }}"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and ('REGISTRY_SERVER' in item.services)
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de hosts de hdf
+          set_fact:
+            hdf_hosts: "{{ hdf_hosts }} + {{ groups[item.host_group] }}"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and ('NIFI_MASTER' in item.services or 'STREAMLINE_SERVER' in item.services or 'REGISTRY_SERVER' in item.services)
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de hosts de solr
+          set_fact:
+            solr_hosts: "{{ solr_hosts }} + {{ groups[item.host_group] }}"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0 and ('SOLR_SERVER' in item.services)
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: LLenar la lista de todos los servicios y clientes
+          set_fact:
+            blueprint_all_services: "{{ blueprint_all_services | union(item.services) }}"
+            blueprint_all_clients: "{{ blueprint_all_clients | union(item.clients|default([])) }}"
+          when: groups[item.host_group] is defined and groups[item.host_group]|length > 0
+          with_items: "{{ blueprint_dynamic }}"
+          no_log: True
+
+        - name: Establecer la variable install_hdp
+          set_fact:
+            install_hdp: True
+          when: namenode_groups|length > 0
+
+        - name: Establecer la variable install_hdf
+          set_fact:
+            install_hdf: True
+          when: hdf_hosts|length > 0
+
+        - name: Establecer la variable install_hdpsearch
+          set_fact:
+            install_hdpsearch: True
+          when: solr_hosts|length > 0
+      when: blueprint_file == 'blueprint_dynamic.j2'
+
+    - block:
+        - name: Establecer la ruta del blueprint (relativa al rol ambari-blueprint)
+          set_fact:
+            blueprint_file_path: "{{ 'roles/ambari-blueprint/files/' + blueprint_file }}"
+          when: blueprint_file|list|first != '/' and blueprint_file|list|first != '~'
+
+        - name: Establecer la ruta de blueprint (absoluta)
+          set_fact:
+            blueprint_file_path: "{{ blueprint_file }}"
+          when: blueprint_file|list|first == '/' or blueprint_file|list|first == '~'
+
+        - name: Leer el contenido del static blueprint
+          set_fact:
+            blueprint_static: "{{ lookup('file', blueprint_file_path) }}"
+
+        - name: Fallar si el static blueprint no es un JSON válido
+          fail:
+            msg: "El blueprint {{blueprint_file}} no es un JSON valido o no tiene un elemento 'host_groups'."
+          when: blueprint_static['host_groups'] is not defined
+
+        - name: Establecer la variable install_hdp
+          set_fact:
+            install_hdp: True
+          when: blueprint_static['host_groups'] | string is search("NAMENODE")
+
+        - name: LLenar la lista de hosts de hiveserver
+          set_fact:
+            hiveserver_hosts: "{{ groups['hadoop-cluster'] }}"
+          when: blueprint_static['host_groups'] | string is search("HIVE_SERVER") or blueprint_static['host_groups'] | string is search("HIVE_METASTORE") or blueprint_static['host_groups'] | string is search("SPARK2_JOBHISTORYSERVER")
+
+        - name: LLenar la lista de hosts de oozie
+          set_fact:
+            oozie_hosts: "{{ groups['hadoop-cluster'] }}"
+          when: blueprint_static['host_groups'] | string is search("OOZIE_SERVER")
+
+        - name: LLenar la lista de hosts de druid
+          set_fact:
+            druid_hosts: "{{ groups['hadoop-cluster'] }}"
+          when: blueprint_static['host_groups'] | string is search("DRUID_BROKER") or blueprint_static['host_groups'] | string is search("DRUID_COORDINATOR") or blueprint_static['host_groups'] | string is search("DRUID_ROUTER") or blueprint_static['host_groups'] | string is search("DRUID_HISTORICAL") or blueprint_static['host_groups'] | string is search("DRUID_OVERLORD")
+
+        - name: LLenar la lista de hosts de superset
+          set_fact:
+            superset_hosts: "{{ groups['hadoop-cluster'] }}"
+          when: blueprint_static['host_groups'] | string is search("SUPERSET")
+
+        - name: LLenar la lista de hosts de rangeradmin
+          set_fact:
+            rangeradmin_hosts: "{{ groups['hadoop-cluster'] }}"
+          when: blueprint_static['host_groups'] | string is search("RANGER_ADMIN") or blueprint_static['host_groups'] | string is search("RANGER_USERSYNC")
+
+        - name: LLenar la lista de hosts de rangerkms
+          set_fact:
+            rangerkms_hosts: "{{ groups['hadoop-cluster'] }}"
+          when: blueprint_static['host_groups'] | string is search("RANGER_KMS_SERVER")
+
+        - name: LLenar la lista de hosts de streamline
+          set_fact:
+            streamline_hosts: "{{ groups['hadoop-cluster'] }}"
+          when: blueprint_static['host_groups'] | string is search("STREAMLINE_SERVER")
+
+        - name: LLenar la lista de hosts de registry
+          set_fact:
+            registry_hosts: "{{ groups['hadoop-cluster'] }}"
+          when: blueprint_static['host_groups'] | string is search("REGISTRY_SERVER")
+
+        - name: Establecer la variable install_hdf
+          set_fact:
+            install_hdf: True
+          when: blueprint_static['host_groups'] | string is search("NIFI_MASTER") or blueprint_static['host_groups'] | string is search("STREAMLINE_SERVER") or blueprint_static['host_groups'] | string is search("REGISTRY_SERVER")
+
+        - name: Establecer la variable install_hdpsearch
+          set_fact:
+            install_hdpsearch: True
+          when: blueprint_static['host_groups'] | string is search("SOLR_SERVER")
+      when: blueprint_file != 'blueprint_dynamic.j2'
+
+- name: Crear las variables helper de Ansible para todos los nodos
+  hosts: hadoop-cluster
+  gather_facts: False
+  tasks:
+    - block:
+        - name: Verificar si existe /usr/bin/python
+          raw: bash -c "test -e /usr/bin/python && echo -n exists || echo -n"
+          register: default_python2_path
+
+        - name: Verificar si existe /usr/bin/python3
+          raw: bash -c "test -e /usr/bin/python3 && echo -n exists || echo -n"
+          register: default_python3_path
+          when: default_python2_path.stdout == ""
+
+        - name: Fallar si no se pudo encontrar una ruta estándar de Python
+          fail:
+            msg: "No se pudo encontrar Python en /us /bin/python o /usr/bin/python3. Si usa una ruta de Python personalizada, configure la variable de inventario 'ansible_python_interpreter' en el path de su entorno."
+          when: default_python2_path.stdout == "" and default_python3_path.stdout != "exists"
+
+        - name: Establecer el ansible_python_interpreter en /usr/bin/python3
+          set_fact:
+            ansible_python_interpreter: "/usr/bin/python3"
+          when: default_python3_path.stdout is defined and default_python3_path.stdout == "exists"
+      when: ansible_python_interpreter is not defined
+
+    - name: Establecer el install_hdp variable en todos los nodos
+      set_fact:
+        install_hdp: "{{ hostvars[groups['ambari-server']|first]['install_hdp'] }}"
+
+    - name: Establecer el install_hdf variable en todos los nodos
+      set_fact:
+        install_hdf: "{{ hostvars[groups['ambari-server']|first]['install_hdf'] }}"
+
+    - name: Establecer el install_hdpsearch variable en todos los nodos
+      set_fact:
+        install_hdpsearch: "{{ hostvars[groups['ambari-server']|first]['install_hdpsearch'] }}"

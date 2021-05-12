@@ -1,0 +1,32 @@
+---
+- name: Generar el {{ db_username }} MD5 password
+  set_fact:
+    db_password_md5: "md5{{ (db_password~db_username) | hash('md5') }}"
+
+- name: Crear el usuario {{ db_username }} de database ({{ database }})
+  shell: su - postgres -c "psql -c \"CREATE ROLE {{ db_username }} ENCRYPTED PASSWORD '{{ db_password_md5 }}' NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT LOGIN;\""
+  args:
+    warn: false
+  register: createuser_results
+  ignore_errors: true
+
+- name: Fallar si no se pudo crear el usuario ({{ database }})
+  fail:
+    msg: No se pudo crear el usuario. Error es {{ createuser_results.stderr }}
+  when: createuser_results is failed and not createuser_results.stderr is search("role .* already exists")
+
+- name: Crear la database {{ db_name }}  ({{ database }})
+  shell: su - postgres -c "createdb -O {{ db_username }} {{ db_name }}"
+  args:
+    warn: false
+  register: createdb_results
+  ignore_errors: true
+
+- name: Fallar si no se pudo crear la base de datos ({{ database }})
+  fail:
+    msg: No se pudo crear la base de datos. Error es {{ createdb_results.stderr }}!
+  when: createdb_results is failed and not createdb_results.stderr is search("database .* already exists")
+
+- name: Configurar el access para el usuario {{ db_username }} de la database ({{ database }})
+  include_tasks: postgres_play_db_access.yml
+  with_items: "{{ db_client_hosts }}"

@@ -1,0 +1,76 @@
+---
+- name: Cargar variables
+  include_vars: "{{ item }}"
+  with_first_found:
+    - files:
+        - "{{ ansible_os_family|lower }}-{{ ansible_distribution|lower }}-{{ ansible_distribution_major_version }}.yml"
+        - "{{ ansible_os_family|lower }}-{{ ansible_distribution|lower }}-{{ ansible_distribution_version }}.yml"
+        - "{{ ansible_os_family|lower }}-{{ ansible_distribution|lower }}.yml"
+        - "{{ ansible_os_family|lower }}-{{ ansible_distribution_major_version }}.yml"
+        - "{{ ansible_os_family|lower }}.yml"
+        - defaults.yml
+      paths:
+        - ../ambari-repo/vars
+
+- name: Agregar el repositorio de Ambari (yum)
+  yum_repository:
+    name: "ambari"
+    description: "ambari Version - ambari-{{ ambari_version }}"
+    baseurl: "{{ ambari_repo_url }}"
+    file: 'ambari'
+    state: present
+    gpgcheck: yes
+    gpgkey: "{{ ambari_repo_url }}/RPM-GPG-KEY/RPM-GPG-KEY-Jenkins"
+  when: ansible_os_family|lower == "redhat"
+
+- name: Agregar el repositorio de Ambari (zypper)
+  zypper_repository:
+    name: "ambari"
+    description: "ambari Version - ambari-{{ ambari_version }}"
+    repo: "{{ ambari_repo_url }}"
+    state: present
+    disable_gpg_check : yes
+    runrefresh: yes
+  when: ansible_os_family|lower == "suse"
+
+- name: Add Ambari repository key (apt)
+  apt_key:
+    data: "{{ lookup('file', ambari_repo_keyfile) }}"
+    id: "{{ ambari_repo_key }}"
+  when: ansible_os_family|lower == "debian"
+
+- name: Agregar el repositorio de Ambari (apt)
+  apt_repository:
+    filename: ambari
+    repo: "deb {{ ambari_repo_url }} Ambari main"
+    state: present
+    update_cache: yes
+  when: ansible_os_family|lower == "debian"
+
+- block:
+    - name: Agregar temporalmente el repositorio HDP-UTILS (SLES 12)
+      zypper_repository:
+        name: temp-HDP-UTILS
+        description: "HDP-UTILS-1.1.0.21"
+        repo: "{{ repo_base_url }}/HDP-UTILS-1.1.0.21/repos/sles12"
+        state: present
+        disable_gpg_check : yes
+        runrefresh: yes
+
+    - name: Asegurar de que libsnappy1 esté ausente (bug en SLES 12 HDP-UTILS repo)
+      zypper:
+        name: libsnappy1
+        state: absent
+
+    - name: Instalar snappy del repo HDP-UTILS (bug en SLES 12 HDP-UTILS repo)
+      zypper:
+        name: snappy-1.0.5-1,snappy-devel-1.0.5-1
+        state: present
+        oldpackage: yes
+
+    - name: Eliminar el repositorio de HDP-UTILS agregado anteriormente (SLES 12)
+      zypper_repository:
+        name: temp-HDP-UTILS
+        state: absent
+        runrefresh: yes
+  when: ansible_os_family|lower == "suse" and ansible_distribution_major_version|int == 12

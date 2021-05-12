@@ -1,0 +1,20 @@
+---
+- name: Reunir los datos del paquete rpm
+  package_facts:
+    manager: auto
+
+- block:
+    - name: Crear directorio tuneds
+      file:
+        path: /etc/tuned/hortonworks/
+        state: directory
+
+    - name: Subir el profile tuned
+      template:
+        src: tuned.conf.j2
+        dest: /etc/tuned/hortonworks/tuned.conf
+        mode: 0755
+
+    - name: Activar el profile tuned
+      shell: tuned-adm profile hortonworks
+  when: ansible_facts.packages['tuned'] is defined

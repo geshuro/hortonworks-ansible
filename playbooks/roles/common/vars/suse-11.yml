@@ -1,0 +1,16 @@
+---
+packages:
+  - openssh                 # scp requerido por Ambari
+  - curl                    # curl requerido por Ambari
+  - php53-curl              # php-curl requred by Ambari in SLES
+  - unzip                   # unzip requerido por Ambari
+  - tar                     # tar requerido por Ambari
+  - wget                    # wget requerido por Ambari
+  - openssl                 # openssl requerido por Ambari
+  - ntp                     # ntp requerido por Hadoop
+  - libopenssl-devel        # openssl-devel recommended for Ranger KMS
+  - libtirpc-devel          # libtirpc requerido por HDP 2.6+
+
+ntp_service_name: ntp
+
+firewall_service_name: SuSEfirewall2_setup

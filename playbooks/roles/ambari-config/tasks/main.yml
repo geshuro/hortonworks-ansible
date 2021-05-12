@@ -1,0 +1,249 @@
+---
+- name: Cargar variables
+  include_vars: "{{ item }}"
+  with_first_found:
+    - files:
+        - "{{ ansible_os_family|lower }}-{{ ansible_distribution|lower }}-{{ ansible_distribution_major_version }}.yml"
+        - "{{ ansible_os_family|lower }}-{{ ansible_distribution|lower }}-{{ ansible_distribution_version }}.yml"
+        - "{{ ansible_os_family|lower }}-{{ ansible_distribution|lower }}.yml"
+        - "{{ ansible_os_family|lower }}-{{ ansible_distribution_major_version }}.yml"
+        - "{{ ansible_os_family|lower }}.yml"
+        - defaults.yml
+      paths:
+        - ../ambari-config/vars
+
+- name: Establecer la configuración con licencia GPL en Ambari
+  lineinfile:
+    path: /etc/ambari-server/conf/ambari.properties
+    backup: no
+    state: present
+    regexp: "^gpl.license.accepted.*"
+    line: "gpl.license.accepted={{ (accept_gpl|default(omit)|bool == true) | ternary('true', 'false') }}"
+  notify: Reiniciar ambari-server
+
+- name: Intentar cambiar la contraseña de administrador predeterminado de Ambari
+  uri:
+    url: http://{{ ansible_fqdn }}:8080/api/v1/users/admin
+    method: PUT
+    force_basic_auth: yes
+    user: "{{ ambari_admin_user }}"
+    password: "{{ ambari_admin_default_password }}"
+    headers: '{"X-Requested-By":"ambari"}'
+    body: " {\"Users\":{ \"password\":\"{{ ambari_admin_password }}\", \"old_password\":\"{{ ambari_admin_default_password }}\"}}"
+    body_format: raw
+    status_code: 200,201,202,403
+    return_content: no
+  when: ambari_admin_user == 'admin' and ambari_admin_password != ambari_admin_default_password
+
+- block:
+    - name: Establecer el nombre de archivo mpack de búsqueda HDP
+      set_fact:
+        mpack_filename: "solr-service-mpack-{{ hdpsearch_version }}.tar.gz"
+
+    - name: "Instalar el paquete HDP Search Management"
+      shell: "echo yes | ambari-server install-mpack --mpack={{ repo_base_url }}/HDP-SOLR/hdp-solr-ambari-mp/{{ mpack_filename }}"
+      notify: Reiniciar ambari-server
+      args:
+        creates: "/var/lib/ambari-server/resources/mpacks/solr-ambari-mpack-{{ hdpsearch_version }}"
+  when: install_hdpsearch is defined and install_hdpsearch
+
+- block:
+    - block:
+        - name: Intentar leer el archivo build.id del repositorio HDF
+          uri:
+            url: "{{ hdf_main_repo_url }}/build.id"
+            method: GET
+            return_content: yes
+          register: hdf_repo_build_id
+
+        - name: Establecer el número de build de HDF
+          set_fact:
+            hdf_build_number_auto: "{{ (hdf_repo_build_id.content|from_yaml).BUILD_NUMBER }}"
+      when: hdf_build_number is not defined or hdf_build_number == 'auto'
+
+    - name: Establecer el nombre de archivo HDF mpack
+      set_fact:
+        mpack_filename: "hdf-ambari-mpack-{{ hdf_version }}-{{ hdf_build_number_auto|default(hdf_build_number) }}.tar.gz"
+
+    - name: "Instalar el paquete HDF Management"
+      shell: "echo yes | ambari-server install-mpack --mpack={{ hdf_main_repo_url }}/tars/hdf_ambari_mp/{{ mpack_filename }}"
+      notify: Reiniciar ambari-server
+      args:
+        creates: "/var/lib/ambari-server/resources/mpacks/{{ mpack_filename | regex_replace('.tar.gz$','') }}"
+      when: hdf_major_version|int >= 3
+
+    - name: "Instalar el paquete HDF Management (with --purge)"
+      shell: "echo yes | ambari-server install-mpack --mpack={{ hdf_main_repo_url }}/tars/hdf_ambari_mp/{{ mpack_filename }} --purge"
+      notify: Reiniciar ambari-server
+      args:
+        creates: "/var/lib/ambari-server/resources/mpacks/{{ mpack_filename | regex_replace('.tar.gz$','') }}"
+      when: hdf_major_version|int < 3
+
+    - meta: flush_handlers
+
+    - name: "Modificar el repositorio base_url de HDF para HDF {{hdf_minor_version}}"
+      uri:
+        url: http://{{ ansible_fqdn }}:8080/api/v1/stacks/HDF/versions/{{ hdf_minor_version }}/{{ main_os_target }}/repositories/HDF-{{ hdf_minor_version }}
+        method: PUT
+        force_basic_auth: yes
+        user: "{{ ambari_admin_user }}"
+        password: "{{ ambari_admin_password }}"
+        headers: '{"X-Requested-By":"ambari"}'
+        body: " {\"Repositories\" : { \"repo_name\": \"HDF\", \"base_url\" : \"{{ hdf_main_repo_url }}\", \"verify_base_url\": true } }"
+        body_format: raw
+        status_code: 200,201,202
+        return_content: no
+      when: ambari_version is version_compare('2.6', '<')
+
+    - name: Cargar el archivo de definicion de version HDF para solo HDF clusters (Ambari 2.6+)
+      template:
+        src: "{{ item }}"
+        dest: "/tmp/cluster_vdf.xml"
+        mode: 0640
+        force: yes
+      with_first_found:
+        - files:
+            - "vdf-HDF-{{ hdf_version }}.xml.j2"
+            - "vdf-HDF-{{ hdf_minor_version }}-latest.xml.j2"
+            - "vdf-HDF-{{ hdf_major_version }}-latest.xml.j2"
+          paths:
+            - ../templates
+      when: ambari_version is version_compare('2.6', '>=') and not install_hdp|default(false)
+  when: install_hdf is defined and install_hdf
+
+- block:
+    - block:
+        - name: "Modificar el repositorio base_url de HDP para HDP {{hdp_minor_version}}"
+          uri:
+            url: http://{{ ansible_fqdn }}:8080/api/v1/stacks/HDP/versions/{{ hdp_minor_version }}/{{ main_os_target }}/repositories/HDP-{{ hdp_minor_version }}
+            method: PUT
+            force_basic_auth: yes
+            user: "{{ ambari_admin_user }}"
+            password: "{{ ambari_admin_password }}"
+            headers: '{"X-Requested-By":"ambari"}'
+            body: " {\"Repositories\" : { \"repo_name\": \"HDP\", \"base_url\" : \"{{ hdp_main_repo_url }}\", \"verify_base_url\": true } }"
+            body_format: raw
+            status_code: 200,201,202
+            return_content: no
+
+        - name: "Modificar el repositorio base_url de HDP-UTILS para HDP {{hdp_minor_version}}"
+          uri:
+            url: http://{{ ansible_fqdn }}:8080/api/v1/stacks/HDP/versions/{{ hdp_minor_version }}/{{ utils_os_target }}
+            method: PUT
+            force_basic_auth: yes
+            user: "{{ ambari_admin_user }}"
+            password: "{{ ambari_admin_password }}"
+            headers: '{"X-Requested-By":"ambari"}'
+            body: " {\"Repositories\" : { \"repo_name\": \"HDP\", \"base_url\" : \"{{ utils_repo_url }}\", \"verify_base_url\": true } }"
+            body_format: raw
+            status_code: 200,201,202
+            return_content: no
+      when: ambari_version is version_compare('2.6', '<')
+
+    - block:
+        - block:
+            - name: Intentar leer el archivo build.id del repositorio de HDP (Ambari> = 2.6)
+              uri:
+                url: "{{ hdp_main_repo_url }}/build.id"
+                method: GET
+                return_content: yes
+              register: hdp_repo_build_id
+
+            - name: Establecer el número de build de HDP (Ambari >= 2.6)
+              set_fact:
+                hdp_build_number_auto: "{{ (hdp_repo_build_id.content|from_yaml).BUILD_NUMBER }}"
+          when: hdp_build_number is not defined or hdp_build_number == 'auto'
+
+        - name: Cargar el archivo de definición de versión HDP (Ambari >= 2.6)
+          template:
+            src: "{{ item }}"
+            dest: "/tmp/cluster_vdf.xml"
+            mode: 0640
+            force: yes
+          with_first_found:
+            - files:
+                - "vdf-HDP-{{ hdp_version }}.xml.j2"
+                - "vdf-HDP-{{ hdp_minor_version }}-latest.xml.j2"
+                - "vdf-HDP-{{ hdp_major_version }}-latest.xml.j2"
+              paths:
+                - ../templates
+      when: ambari_version is version_compare('2.6', '>=')
+
+    - name: Habilitar la creación de directorio de inicio de usuario
+      lineinfile:
+        path: /etc/ambari-server/conf/ambari.properties
+        state: present
+        line: "{{ item }}"
+      notify: Reiniciar ambari-server
+      with_items:
+        - "ambari.post.user.creation.hook.enabled=true"
+        - "ambari.post.user.creation.hook=/var/lib/ambari-server/resources/scripts/post-user-creation-hook.sh"
+  when: install_hdp is defined and install_hdp
+
+- block:
+    - name: Intentar obtener un VDF existente para la versión requerida (Ambari >= 2.6)
+      uri:
+        url: "http://{{ ansible_fqdn }}:8080/api/v1/version_definitions?VersionDefinition/release/version={{ (install_hdp|default(false) == true) | ternary(hdp_version,hdf_version) }}"
+        method: GET
+        force_basic_auth: yes
+        user: "{{ ambari_admin_user }}"
+        password: "{{ ambari_admin_password }}"
+        headers: '{"X-Requested-By":"ambari"}'
+        status_code: 200,201,202
+        return_content: yes
+      register: existing_vdf
+
+    - name: Registrar la VDF con Ambari (Ambari >= 2.6)
+      uri:
+        url: http://{{ ansible_fqdn }}:8080/api/v1/version_definitions
+        method: POST
+        force_basic_auth: yes
+        user: "{{ ambari_admin_user }}"
+        password: "{{ ambari_admin_password }}"
+        headers: '{"X-Requested-By":"ambari"}'
+        body: " {\"VersionDefinition\":{ \"version_url\":\"file:/tmp/cluster_vdf.xml\"}}"
+        body_format: raw
+        status_code: 200,201,202
+        return_content: no
+      when: (existing_vdf.content|from_yaml)['items'] | length == 0
+  when: ambari_version is version_compare('2.6', '>=')
+
+- block:
+    - name: Generar el body repo_version API request a partir del template
+      template:
+        src: "{{ repo_version_template | default('repo_version_template.json.j2') }}"
+        dest: /tmp/repo_version_update_body.json
+      become: False  
+      delegate_to: localhost        
+
+    - name: Actualizar el modelo de repo_version para establecer ambari_managed_repositories=false
+      uri:
+        url: "http://{{ ansible_fqdn }}:8080/api/v1/stacks/HDP/versions/{{ hdp_minor_version }}/repository_versions/1"
+        method: PUT
+        force_basic_auth: yes
+        user: "{{ ambari_admin_user }}"
+        password: "{{ ambari_admin_password }}"
+        headers:
+          "X-Requested-By": "ambari"
+          "Content-type": "Application/json"
+        body: "{{ lookup('file', '/tmp/repo_version_update_body.json')|to_json }}"
+        status_code: 200
+  when: not (ambari_managed_repositories|default(True))
+
+- meta: flush_handlers
+
+- name: Asegurar que todos los agentes de Ambari se hayan registrado
+  uri:
+    url: http://{{ ansible_fqdn }}:8080/api/v1/hosts/{{ hostvars[item]['ansible_fqdn']|lower }}
+    method: GET
+    force_basic_auth: yes
+    user: "{{ ambari_admin_user }}"
+    password: "{{ ambari_admin_password }}"
+    headers: '{"X-Requested-By":"ambari"}'
+    status_code: 200,201,202,404
+    return_content: no
+  with_items: "{{ groups['hadoop-cluster'] }}"
+  register: result
+  until: "result.status != 404"
+  retries: 100
+  delay: 5

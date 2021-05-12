@@ -1,0 +1,9 @@
+---
+- import_playbook: "set_variables.yml"
+
+- name: Aplicar el rol post_instalacion al grupo hadoop-cluster
+  hosts: hadoop-cluster
+  any_errors_fatal: true
+  become: yes
+  roles:
+    - post_instalacion
