@@ -1,193 +1,240 @@
-ansible-hortonworks
------------
+Guía de instalación de ansible hortonworks
+------------------------------
 
-These Ansible playbooks will build a Hortonworks cluster (Hortonworks Data Platform and / or Hortonworks DataFlow) using Ambari Blueprints. For a full list of supported features check [below](#features).
+* Estos playbooks de Ansible implementarán un clúster de Hortonworks Data Platform utilizando Ambari Blueprints y un inventario estático.
 
-- Tested with: HDP 3.0 -> 3.1, HDP 2.4 -> 2.6.5, HDP Search 3.0 -> 4.0, HDF 2.0 -> 3.4, Ambari 2.4 -> 2.7 (the versions must be matched as per the [support matrix](https://supportmatrix.hortonworks.com)).
-
-- This includes building the Cloud infrastructure (optional) and taking care of the prerequisites.
-
-- The aim is to first build the nodes in a Cloud environment, prepare them (OS settings, database, KDC, etc) and then install Ambari and create the cluster using Ambari Blueprints.
-  - If the infrastructure is already built (Terraform, bare-metal, etc.), it can also use a [static inventory](inventory/static).
-  - For a detailed Terraform implementation check the following: [https://dataengi.com/2018/09/21/terraform-hdp](https://dataengi.com/2018/09/21/terraform-hdp).
-
-- It can use a static blueprint or a [dynamically generated](playbooks/roles/ambari-blueprint/templates/blueprint_dynamic.j2) one based on the components from the Ansible [variables file](playbooks/group_vars/all#L161).
-  - The dynamic blueprint gives the freedom to distribute components for a chosen topology but this topology must respect Ambari Blueprint restrictions (e.g. if a single `NAMENODE` is set, there must also be a `SECONDARY_NAMENODE`).
-  - Another advantage of the dynamic blueprint is that it generates the correct blueprint for when using [HA services](playbooks/roles/ambari-blueprint/templates/blueprint_dynamic.j2#L440), or [external databases](playbooks/roles/ambari-blueprint/templates/blueprint_dynamic.j2#L504) or [Kerberos](playbooks/roles/ambari-blueprint/templates/blueprint_dynamic.j2#L3).
+* El uso del inventario estático implica que los nodos ya están construidos y son accesibles a través de SSH.
 
 
-## DISCLAIMER
-
-These Ansible playbooks offer a specialised way of deploying Ambari-managed Hortonworks clusters.
-To use these playbooks you'll need to have a good understanding of both [Ansible](https://docs.ansible.com/ansible/latest/index.html) and [Ambari Blueprints]( https://cwiki.apache.org/confluence/display/AMBARI/Blueprints).
-
-This is not a Hortonworks product and these playbooks are not officially supported by Hortonworks.
-
-For a fully Hortonworks-supported and user friendly way of deploying Ambari-managed Hortonworks clusters, please check [Cloudbreak](https://docs.hortonworks.com/HDPDocuments/Cloudbreak/Cloudbreak-2.7.2/content/index.html) first.
+---
 
 
-## [Installation Instructions](id:instructions)
+# Configuración Bastión
 
-- AWS: See [INSTALL.md](INSTALL_AWS.md) for AWS build instructions and cluster installation.
-- Azure: See [INSTALL.md](INSTALL_Azure.md) for Azure build instructions and cluster installation.
-- Google Compute Engine: See [INSTALL.md](INSTALL_GCE.md) for GCE build instructions and cluster installation.
-- OpenStack: See [INSTALL.md](INSTALL_OpenStack.md) for OpenStack build instructions and cluster installation.
-- Static inventory: See [INSTALL.md](INSTALL_static.md) for cluster installation on pre-built environments.
+Antes de implementar, se debe preparar el nodo bastion, donde se ejecutará Ansible.
+
+Este nodo debe poder conectarse a los nodos del clúster a través de SSH.
 
 
-## [Requirements](id:requirements)
+## RHEL 7
 
-- Ansible 2.5+
+1. Subscribir el servidor bastion
 
-- Expects CentOS/RHEL, Ubuntu, Amazon Linux or SLES hosts
+   ```
+   subscription-manager register --username {usuario} --password {usuario_clave} --auto-attach
+   subscription-manager repos --enable rhel-7-server-ansible-2.9-rpms
+   subscription-manager repos --enable rhel-7-server-optional-rpms
+   ```
+   
+2. Instalar los paquetes requeridos
 
-
-## [Concepts](id:concepts)
-
-The core concept of these playbooks is the `host_groups` field in the [Ambari Blueprint](https://cwiki.apache.org/confluence/display/AMBARI/Blueprints#Blueprints-BlueprintFieldDescriptions).
-This is an essential piece of Ambari Blueprints that maps the topology components to the actual servers.
-
-The `host_groups` field in the [Ambari Blueprint](https://cwiki.apache.org/confluence/display/AMBARI/Blueprints#Blueprints-BlueprintFieldDescriptions) logically groups the components, while the `host_groups` field in the [Cluster Creation Template](https://cwiki.apache.org/confluence/display/AMBARI/Blueprints#Blueprints-ClusterCreationTemplateStructure) maps these logical groups to the actual servers that will run the components.
-
-Therefore, these Ansible playbooks try to take advantage of Blueprint's `host_groups` and map the Ansible inventory groups to the `host_groups` using a Jinja2 template: [cluster_template.j2](playbooks/roles/ambari-blueprint/templates/cluster_template.j2#L32).
-
-<p align="center">
-  <img src="https://user-images.githubusercontent.com/5119993/43648111-699606a6-9731-11e8-8dcb-71c0c47f482a.png">
-</p>
-
-- If the blueprint is dynamic, these `host_groups` are defined in the [variable file](playbooks/group_vars/all#L162) and they need to match the Ansible inventory groups that will run those components.
-- If the blueprint is static, these `host_groups` are defined in the [blueprint itself](playbooks/roles/ambari-blueprint/files/blueprint_hdfs_only.json#L27) and they need to match the Ansible inventory groups that will run those components.
+   ```
+   sudo yum update -y
+   sudo yum -y install python3
+   sudo yum -y install gcc gcc-c++ python-virtualenv python-pip python-devel libffi-devel openssl-devel libyaml-devel sshpass git vim-enhanced
+   ```
 
 
-### Cloud inventory
-A special mention should be given when using a Cloud environment and / or a [dynamic Ansible inventory](https://docs.ansible.com/ansible/latest/user_guide/intro_dynamic_inventory.html).
+3. Crear entorno virtual de Python
 
-In this case, building the Cloud environment is decoupled from building the Ambari cluster, and there needs to be a way to tie things together - the Cloud nodes to the Blueprint layout (e.g. on which Cloud node the `NAMENODE` should run).
-
-This is done using a feature that exists in all (or most) Clouds: [Tags](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/Using_Tags.html). The Ansible dynamic inventory takes advantage of this Tag information and creates an Ansible inventory group for each Tag.
-
-If these playbooks are also used to build the Cloud environment, the nodes need to be grouped together in the [Cloud inventory variables file](inventory/aws/group_vars/all#L27). This information is then used [to set the Tags](playbooks/entorno/build_aws_nodes.yml#L57) when building the nodes.
-
-Then, using the Ansible dynamic inventory for the specific Cloud, the helper `add_{{ entorno }}_nodes` [playbooks](playbooks/entorno) create the [Ansible inventory groups](playbooks/entorno/agregar_nodos_aws.yml#L11) that the rest of the playbooks expect.
-- A more elegant solution would have been to use Static Groups of Dynamic Groups as [Ansible recommends](https://docs.ansible.com/ansible/2.6/user_guide/intro_dynamic_inventory.html#static-groups-of-dynamic-groups). However, each Cloud's dynamic inventory has a different syntax for creating the groups, for example AWS uses [`tag_Group_`](playbooks/entorno/agregar_nodos_aws.yml#L15) while OpenStack uses [`meta-Group_`](playbooks/entorno/agregar_nodos_openstack.yml#L15) and the helper `add_{{ entorno }}_nodes` [playbooks](playbooks/entorno) was the solution to make this work for all Clouds.
+   ```
+   virtualenv ~/ansible; source ~/ansible/bin/activate
+   ```
 
 
-## [Parts](id:parts)
+4. Instalar los paquetes de Python necesarios dentro de virtualenv
 
-Currently, these playbooks are divided into the following parts:
- 
-1. **(Optional) Build the Cloud nodes**
-
-   Run the `build_cloud.sh` script to build the Cloud nodes. Refer to the Cloud specific INSTALL guides for more information.
-
-2. **Install the cluster**
-
-   Run the `instalar_cluster.sh` script that will install the HDP and / or HDF cluster using Blueprints while taking care of the necessary prerequisites.
+   ```
+   pip3 install setuptools --upgrade
+   pip3 install pip --upgrade 
+   pip3 install ansible==2.9.6
+   ```
 
 
-...or, alternatively, run each step separately (also useful for replaying a specific part in case of failure):
+5. (Opcional) Generate the SSH private key
 
-1. **(Optional) Build the Cloud nodes**
+   El nodo Bastión deberá iniciar sesión a través de SSH en los nodos del clúster.
 
-   Run the `build_cloud.sh` script to build the Cloud nodes. Refer to the Cloud specific INSTALL guides for more information.
+   Esto se puede hacer usando un nombre de usuario y una contraseña o con claves SSH.
 
-2. **Prepare the Cloud nodes**
+   Para el método de claves SSH, la clave privada SSH debe colocar o generar en el Bastión, normalmente en .ssh, por ejemplo: `~/.ssh/id_rsa`. 
 
-   Run the `preparar_nodos.sh` script to prepare the nodes.
-  
-   This installs the required OS packages, applies the recommended OS settings and prepares the database and / or the local MIT-KDC.
+   Para generar una nueva clave, ejecute lo siguiente:
 
-3. **Install Ambari**
-
-   Run the `instalar_ambari.sh` script to install Ambari on the nodes.
-
-   This adds the Ambari repo, installs the Ambari Agent and Server packages and configures the Ambari Server with the required Java and database options.
-
-4. **Configure Ambari**
-
-   Run the `configurar_ambari.sh` script to configure Ambari.
-  
-   This further configures Ambari with some settings, changes admin password and adds the repository information needed by the cluster build.
-
-5. **Apply Blueprint**
-
-   Run the `aplicar_blueprint.sh` script to install HDP and / or HDF based on an Ambari Blueprint.
-  
-   This uploads the blueprint to Ambari and applies it. Ambari would then create and install the cluster.
-
-6. **Post Install**
-
-   Run the `post_instalacion.sh` script to execute any actions after the cluster is built.
+   ```
+   ssh-keygen -q -t rsa -f ~/.ssh/id_rsa
+   ```
 
 
-## [Features](id:features)
+# <a name="static_inventory"></a>Establecer el inventario estático
 
-### Infrastructure support
-- [x] Pre-built infrastructure (using a static inventory file)
-- [x] OpenStack nodes
-- [ ] OpenStack Block Storage (Cinder)
-- [x] AWS nodes (with root EBS only)
-- [ ] AWS Block Storage (additional EBS)
-- [x] Azure nodes
-- [ ] Azure Block Storage (VHDs)
-- [x] Google Compute Engine nodes (with root Persistent Disks only)
-- [ ] Google Compute Engine Block Storage (additional Persistent Disks)
+Modifique el archivo en `~/inventory/static` para configurar el inventario estático.
 
-### OS support
-- [x] CentOS/RHEL 6 support
-- [x] CentOS/RHEL 7 support
-- [x] Ubuntu 14 support
-- [x] Ubuntu 16 support
-- [x] Amazon Linux 2 AMI support (Ambari 2.7+)
-- [x] SUSE Linux Enterprise Server 11 support
-- [x] SUSE Linux Enterprise Server 12 support
+El inventario estático coloca los nodos en diferentes grupos como se describe en la [Documentacion Ansible](https://docs.ansible.com/ansible/latest/user_guide/intro_inventory.html#hosts-and-groups).
 
-### Prerequisites done
-- [x] Install and start NTP
-- [x] Create /etc/hosts mappings
-- [x] Set nofile and nproc limits
-- [x] Set swappiness
-- [x] Disable SELinux
-- [x] Disable THP
-- [x] Set Ambari repositories
-- [x] Install OpenJDK or Oracle JDK
-- [x] Install and prepare MySQL
-- [x] Install and prepare PostgreSQL
-- [x] Install and configure local MIT KDC
-- [ ] Partition and mount additional storage
+Cada grupo define un rol de nodo específico, por ejemplo, master, slave, edge, pero los nombres de los grupos deben ser los mismos que los grupos de host.
 
-### Cluster build supported features
-- [x] Install Ambari Agents and Server
-- [x] Configure Ambari Server with OpenJDK or Oracle JDK
-- [x] Configure Ambari Server with external database options
-- [ ] Configure Ambari Server with SSL
-- [x] Configure custom Repositories and specific HDP/HDF versions
-- [x] Configure Rack Awareness (static inventory)
-- [x] Configure custom Paths (data / logs / metrics / tmp)
-- [x] Build HDP clusters
-- [x] Build HDF clusters
-- [x] Build HDP clusters with HDF nodes
-- [x] Build HDP clusters with HDP Search (Solr) addon
-- [x] Build clusters with a specific JSON blueprint (static blueprint)
-- [x] Build clusters with a generated JSON blueprint (dynamic blueprint based on Jinja2 template and variables)
-- [x] Wait for the cluster to be built
 
-### Dynamic blueprint supported features
-> The components that will be installed are only those defined in the `blueprint_dynamic` [variable](playbooks/group_vars/all#L161).
-> - Supported in this case means all prerequites (databases, passwords, required configs) are taken care of and the component is deployed successfully on the chosen `host_group`.
-- [x] HDP Services: `HDFS`, `YARN + MapReduce2`, `Hive`, `HBase`, `Accumulo`, `Oozie`, `ZooKeeper`, `Storm`, `Atlas`, `Kafka`, `Knox`, `Log Search`, `Ranger`, `Ranger KMS`, `SmartSense`, `Spark2`, `Zeppelin`, `Druid`, `Superset`
-- [x] HDF Services: `NiFi`, `NiFi Registry`, `Schema Registry`, `Streaming Analytics Manager`, `ZooKeeper`, `Storm`, `Kafka`, `Knox`, `Ranger`, `Log Search`
-- [x] HA Configuration: NameNode, ResourceManager, Hive, HBase, Ranger KMS, Druid
-- [x] Secure clusters with MIT KDC (Ambari managed)
-- [x] Secure clusters with Microsoft AD (Ambari managed)
-- [x] Install Ranger and enable all plugins
-- [x] Ranger KMS
-- [ ] Ranger AD integration
-- [ ] Hadoop SSL
-- [ ] Hadoop AD integration
-- [ ] NiFi SSL
-- [ ] NiFi AD integration
-- [ ] Basic memory settings tuning
-- [ ] Make use of additional storage for HDP workers
-- [ ] Make use of additional storage for master services
-- [ ] Configure additional storage for NiFi
+Se debe configurar las siguientes variables para cada nodo:
+
+| Variable                      | Descripción                                                                                                 |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| ansible_host                  | El nombre DNS o IP del host a conectarse.                                                               |
+| ansible_user                  | El usuario de Linux con permisos de sudo que Ansible usará para conectarse al host (no tiene que ser root) |                         |
+| ansible_ssh_pass              | (Opcional) La contraseña SSH que se utilizará cuando se conecte al host (esta es la contraseña del `ansible_user`). Se debe configurar esto o `ansible_ssh_private_key_file`. |
+| ansible_ssh_private_key_file  | (Opcional) Ruta local de la clave privada SSH que se utilizará para iniciar sesión en el host. Se debe configurar esto o `ansible_ssh_pass`. |
+| rack                          | (Opcional) Información de rack para el host. Por defecto es `/default-rack`. |
+
+
+# Test del inventario
+
+Listar el inventario:
+
+```
+ansible -i inventory/static all --list-hosts
+```
+
+Confirmar el acceso a los hosts del inventario:
+
+```
+ansible -i inventory/static all -m setup
+```
+
+
+# Establecer las variables del clúster
+
+## archivo de configuración del clúster
+
+Modificar el archivo en `~/playbooks/group_vars/all` para establecer la configuración del clúster.
+
+| Variable                   | Descripción                                                                                                 |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| cluster_name               | El nombre del clúster.                                                                                    |
+| ambari_version             | La versión de Ambari, en el formato completo de 4 números, por ejemplo: `2.7.1.0`.                                     |
+| hdp_version                | La versión HDP, en el formato completo de 4 números, por ejemplo: `3.0.1.0`.                                        |
+| repo_base_url              | La URL base de los repositorios. Cambiar esto a la URL del servidor web local si usa un repositorio local. |
+
+### configuración general
+
+| Variable                   | Descripción                                                                                                 |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| external_dns               | Esto controla el tipo de DNS que se utilizará. En caso "yes", utilizará cualquier DNS que esté configurado actualmente. Si "no" completará el archivo "/etc/hosts" con todos los nodos del clúster. |
+| disable_firewall           | Esta variable controla el servicio de firewall local (iptables, firewalld, ufw) |
+| timezone                   | Esta variable establece el timezone en los nodos. |
+
+
+### configuración java
+
+| Variable                   | Descripción                                                                                                 |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| java                       | Se puede configurar en `embedded` (predeterminado: descargado por Ambari),` openjdk` u `oraclejdk`. Si se selecciona `oraclejdk`, entonces el paquete` .x64.tar.gz` debe descargarse previamente de [Oracle]. |
+| oraclejdk_options          | Estas opciones solo son relevantes si `java` está configurado como` oraclejdk`. |
+| `.base_folder`             | Esto indica la carpeta donde se debe desempaquetar el paquete de Java. El valor predeterminado de `/usr/java` también es utilizado por Oracle JDK rpm. |
+| `.tarball_location`        | La ubicación del archivo tarball. Esta puede ser la ubicación en los sistemas remotos o en el bastión Ansible, dependiendo de la variable `remote_files`. |
+| `.jce_location`            | La ubicación del archivo zip del paquete JCE. Esta puede ser la ubicación en los sistemas remotos o en el bastión Ansible, dependiendo de la variable `remote_files`. |
+| `.remote_files`            | Si esta variable se establece en "yes", los archivos tarball y JCE ya deben estar presentes en el sistema remoto. Si se establece en "no", Ansible copiará los archivos (desde el bastión Ansible a los sistemas remotos). |
+
+### configuración de ruta (opcional)
+
+Puede anular la configuración de la ruta configurando esas variables.
+Hay más variables disponibles en `playbooks/roles/ambari-blueprint/defaults/main.yml`
+
+| Variable                   | Descripción                                                                                                 |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| base_log_dir               | Configure la ruta del log base. |
+| base_metrics_dir           | Configure la ruta de métricas base. |
+| base_tmp_dir               | Configure la ruta base tmp. |
+| hadoop_base_dir            | Configure la ruta de datos de la base de hadoop. |
+| kafka_base_dir             | Configure la ruta de datos base de kafka. |
+
+### configuración base de datos
+
+| Variable                                 | Descripción                                                                                                |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| database                                 | El tipo de base de datos que se debe utilizar. Una elección entre `embedded` (Ambari predeterminado),` postgres`, `mysql` o` mariadb`. |
+| database_options                         | Estas opciones solo son relevantes para la base de datos no `embedded`. |
+| `.external_hostname`                     | El nombre de host/IP del servidor de la base de datos. Si se deja vacío `''`, los playbooks instalarán el servidor de la base de datos en el nodo Ambari y prepararán todo con la configuración definida. |
+| `.add_repo`                              | Si se establece en `yes`, Ansible agregará un archivo de repositorio que apunta al repositorio donde se encuentran los paquetes de la base de datos (de forma predeterminada, la URL del repositorio es pública). Establezca esto en `no` para deshabilitar este comportamiento y usar repositorios que ya están disponibles para el sistema operativo. |
+| `.ambari_db_name`, `.ambari_db_username`, `.ambari_db_password` | El nombre de la base de datos que Ambari debe usar y el nombre de usuario y contraseña para conectarse a ella. Si se define `database_options.external_hostname`, estos valores se usarán para conectarse a la base de datos; de lo contrario, el playbook de Ansible creará la base de datos y el usuario. |
+| `.hive_db_name`, `.hive_db_username`, `.hive_db_password`       | El nombre de la base de datos que debe usar Hive y el nombre de usuario y la contraseña para conectarse a ella. Si se define `database_options.external_hostname`, estos valores se usarán para conectarse a la base de datos; de lo contrario, el playbook de Ansible creará la base de datos y el usuario. |
+| `.oozie_db_name`, `.oozie_db_username`, `.oozie_db_password`    | El nombre de la base de datos que debe usar Oozie y el nombre de usuario y contraseña para conectarse a ella. Si se define `database_options.external_hostname`, estos valores se usarán para conectarse a la base de datos; de lo contrario, el libro de jugadas de Ansible creará la base de datos y el usuario. |
+| `.druid_db_name`, `.druid_db_username`, `.druid_db_password`    | El nombre de la base de datos que debe usar Druid y el nombre de usuario y contraseña para conectarse a ella. Si se define `database_options.external_hostname`, estos valores se usarán para conectarse a la base de datos; de lo contrario, el libro de jugadas de Ansible creará la base de datos y el usuario. |
+| `.superset_db_name`, `.superset_db_username`, `.superset_db_password`          | El nombre de la base de datos que debe usar Superset y el nombre de usuario y contraseña para conectarse a ella. Si se define `database_options.external_hostname`, estos valores se usarán para conectarse a la base de datos; de lo contrario, el libro de jugadas de Ansible creará la base de datos y el usuario. |
+| `.rangeradmin_db_name`, `.rangeradmin_db_username`, `.rangeradmin_db_password` | El nombre de la base de datos que Ranger Admin debe usar y el nombre de usuario y contraseña para conectarse a ella. Si se define `database_options.external_hostname`, estos valores se usarán para conectarse a la base de datos; de lo contrario, el libro de jugadas de Ansible creará la base de datos y el usuario. |
+| `.rangerkms_db_name`, `.rangerkms_db_username`, `.rangerkms_db_password`       | El nombre de la base de datos que debe usar Ranger KMS y el nombre de usuario y contraseña para conectarse a ella. Si se define `database_options.external_hostname`, estos valores se usarán para conectarse a la base de datos; de lo contrario, el libro de jugadas de Ansible creará la base de datos y el usuario. |
+
+### configuración ranger
+
+| Variable                       | Descripción                                                                                                |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| ranger_options                 | Estas opciones solo son relevantes si `RANGER_ADMIN` es un componente de la pila dinámica de Blueprint.           |
+| `.enable_plugins`              | Si se establece en `yes`, se habilitarán los complementos para todos los servicios disponibles. Con `no`, el Ranger se instalaría pero no funcionaría. |
+| ranger_security_options        | Opciones relacionadas con la seguridad para Ranger (como contraseñas).                                                 |
+| `.ranger_admin_password`       | La contraseña para los usuarios administradores de Ranger (tanto admin como amb_ranger_admin).                                 |
+| `.ranger_keyadmin_password`    | La contraseña del usuario del administrador de claves de Ranger. |
+| `.kms_master_key_password`     | La contraseña utilizada para cifrar la Master Key.                                                           |
+
+### configuración de seguridad
+
+| Variable                       | Descripción                                                                                                |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| ambari_admin_password          | La contraseña de Ambari del usuario `ambari_admin_user` configurada previamente. Si el nombre de usuario es `admin` y esta contraseña es diferente a la predeterminada` admin`, la función `ambari-config` cambiará la contraseña predeterminada por la que se establece aquí. |
+| default_password               | Una contraseña predeterminada para todas las contraseñas requeridas que no se especifican en el blueprint. |
+| atlas_security_options`.admin_password`  | La contraseña para la usuario administrador de Atlas.                                        |
+| knox_security_options`.master_secret`    | El Knox Master Secret. |
+| superset_security_options      | Opciones relacionadas con la seguridad para Superset (como contraseñas).                              |
+| `.secret_key`                  | El valor de la propiedad `SECRET_KEY` (que se utiliza para cifrar las contraseñas de los usuarios).               |
+| `.admin_password`              | La contraseña para la usuario administrador de Superset.                                               |
+| logsearch_security_options`.admin_password`  | La contraseña del usuario administrador de Log Search.                              |
+| accumulo_security_options      | Opciones relacionadas con la seguridad para Accumulo (como contraseñas).                              |
+| `.root_password`               | Contraseña para el usuario root de Accumulo. Esta contraseña se utilizará para inicializar Accumulo y crear el usuario de seguimiento.       |
+| `.instance_secret`             | Un secreto exclusivo de una instancia determinada que todos los procesos del servidor de Accumulo deben conocer para comunicarse entre sí. |
+| `.trace_user`                  | Usuario que utiliza el proceso de seguimiento para escribir datos de seguimiento en Accumulo.                    |
+| `.trace_password`              | Contraseña para el usuario de seguimiento.                                                           |
+
+### configuración ambari
+
+| Variable                       | Descripción                                                                                                |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| ambari_admin_user              | El nombre de usuario del administrador de Ambari, normalmente `admin`. Este usuario y la contraseña a continuación se utilizan para iniciar sesión en Ambari para solicitudes de API. |
+| ambari_admin_default_password  | La contraseña predeterminada para el usuario `admin` de Ambari. |
+| config_recommendation_strategy | Campo de configuración que especifica la estrategia de aplicar recomendaciones de configuración a un clúster. Elija entre `NEVER_APPLY`,` ONLY_STACK_DEFAULTS_APPLY`, `ALWAYS_APPLY`,` ALWAYS_APPLY_DONT_OVERRIDE_CUSTOM_VALUES`. |
+| smartsense`.id`, `.account_name`, `.customer_email` | Detalles de la suscripción a Hortonworks. |
+| wait / wait_timeout            | Establezca esto en `true` si desea que el playbook espere a que el clúster se crea correctamente después de aplicar el blueprint. La configuración del tiempo de espera controla cuánto tiempo (en segundos) debe esperar la creación del clúster. |
+| accept_gpl                     | Configure en `yes` para permitir que Ambari Server descargue e instale paquetes con licencia GPL. |
+| cluster_template_file          | La ruta al archivo de plantilla de creación de clústeres que se utilizará para construir el clúster. |
+
+### configuración blueprint
+
+| Variable                       | Descripción                                                                                                |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| blueprint_name                 | El nombre del blueprint tal como se almacenará en Ambari.                                                  |
+| blueprint_file                 | La ruta al archivo de blueprint que se cargará en Ambari. |
+| blueprint_dynamic              | Configuración para la plantilla de blueprint dinámico: solo se utiliza si `blueprint_file` está configurado como` blueprint_dynamic.j2` |
+
+
+# Instalar el cluster
+
+Ejecute el script que instalará el clúster usando Blueprints teniendo en cuenta los requisitos previos necesarios.
+
+Asegúrese de establecer la variable de entorno `ENTORNO_A_USAR` en `static`.
+
+```
+export ENTORNO_A_USAR=static
+bash instalar_cluster.sh
+```
+
+Es posible que deba cargar las variables de entorno si se trata de una nueva sesión:
+
+```
+source ~/ansible/bin/activate
+```
+
+
+Esta secuencia de comandos aplicará todos los playbooks necesarios en una ejecución, pero también puede aplicar los playbooks individuales ejecutando los siguientes scripts:
+
+- Preparar los nodos: `preparar_nodos.sh`
+- Instalar Ambari: `instalar_ambari.sh`
+- Configurar Ambari: `configurar_ambari.sh`
+- Aplicar Blueprint: `aplicar_blueprint.sh`
+- Post Instalación: `post_instalacion.sh`
